@@ -1,0 +1,9 @@
+[package]
+name = "writer-core"
+version = "0.1.0"
+authors = ["Tyler Colby"]
+edition = "2021"
+description = "Pure logic library for the Writer app (text buffer, markdown, serialization)"
+
+[dependencies]
+# None - pure Rust, no platform deps
