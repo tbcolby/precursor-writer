@@ -51,6 +51,104 @@ impl Renderer {
         self.gam.redraw().expect("can't redraw");
     }
 
+    // ---- Menu Overlay ----
+
+    pub fn draw_menu(&self, items: &[&str], cursor: usize) {
+        self.clear();
+
+        self.post_text(
+            MARGIN_LEFT, 12,
+            self.screensize.x - MARGIN_LEFT * 2, 30,
+            GlyphStyle::Bold,
+            "MENU",
+        );
+
+        let line_height = 30;
+        let list_top = 52;
+
+        for (i, item) in items.iter().enumerate() {
+            let y = list_top + (i as isize) * line_height;
+            let marker = if i == cursor { "> " } else { "  " };
+            let label = format!("{}{}", marker, item);
+            self.post_text(
+                16, y,
+                self.screensize.x - 32, line_height - 2,
+                GlyphStyle::Regular,
+                &label,
+            );
+        }
+
+        self.post_text(
+            MARGIN_LEFT, self.screensize.y - 36,
+            self.screensize.x - MARGIN_LEFT * 2, 28,
+            GlyphStyle::Small,
+            "arrows=select  ENTER=open  F4=close",
+        );
+
+        self.finish();
+    }
+
+    // ---- Help Screen ----
+
+    pub fn draw_help(&self, help_text: &str) {
+        self.clear();
+
+        let line_height = 20;
+        let mut y = 16isize;
+
+        for line in help_text.lines() {
+            if y + line_height > self.screensize.y - 36 {
+                break;
+            }
+            let style = if y == 16 { GlyphStyle::Bold } else { GlyphStyle::Small };
+            self.post_text(
+                16, y,
+                self.screensize.x - 32, line_height - 2,
+                style,
+                line,
+            );
+            y += line_height;
+        }
+
+        self.post_text(
+            MARGIN_LEFT, self.screensize.y - 28,
+            self.screensize.x - MARGIN_LEFT * 2, 22,
+            GlyphStyle::Small,
+            "Press any key to close",
+        );
+
+        self.finish();
+    }
+
+    // ---- Confirm Exit ----
+
+    pub fn draw_confirm_exit(&self) {
+        self.clear();
+
+        self.post_text(
+            MARGIN_LEFT, 40,
+            self.screensize.x - MARGIN_LEFT * 2, 30,
+            GlyphStyle::Bold,
+            "Unsaved Changes",
+        );
+
+        self.post_text(
+            MARGIN_LEFT, 80,
+            self.screensize.x - MARGIN_LEFT * 2, 40,
+            GlyphStyle::Regular,
+            "Document has unsaved changes.",
+        );
+
+        self.post_text(
+            20, 140,
+            self.screensize.x - 40, 80,
+            GlyphStyle::Regular,
+            "y = Save & exit\nn = Exit without saving\nF4 = Cancel",
+        );
+
+        self.finish();
+    }
+
     // ---- Mode Select ----
 
     pub fn draw_mode_select(&self, cursor: usize) {
@@ -86,7 +184,7 @@ impl Renderer {
             MARGIN_LEFT, self.screensize.y - 40,
             self.screensize.x - MARGIN_LEFT * 2, 30,
             GlyphStyle::Small,
-            "arrows=select  ENTER=open  q=quit",
+            "F1=menu F4=quit  ENTER=open",
         );
 
         self.finish();
@@ -142,7 +240,7 @@ impl Renderer {
             MARGIN_LEFT, self.screensize.y - 40,
             self.screensize.x - MARGIN_LEFT * 2, 30,
             GlyphStyle::Small,
-            "ENTER=open  n=new  d=delete  q=back",
+            "F1=menu F4=back  ENTER=open  n=new  d=del",
         );
 
         self.finish();
@@ -342,7 +440,7 @@ impl Renderer {
             MARGIN_LEFT, self.screensize.y - 40,
             self.screensize.x - MARGIN_LEFT * 2, 30,
             GlyphStyle::Small,
-            "ENTER=select  q=cancel",
+            "F4=back  ENTER=select",
         );
 
         self.finish();
@@ -380,7 +478,7 @@ impl Renderer {
             MARGIN_LEFT, self.screensize.y - 40,
             self.screensize.x - MARGIN_LEFT * 2, 30,
             GlyphStyle::Small,
-            "ENTER=select  q=cancel",
+            "F4=back  ENTER=select",
         );
 
         self.finish();
@@ -405,7 +503,7 @@ impl Renderer {
             MARGIN_LEFT, 26,
             self.screensize.x - MARGIN_LEFT * 2, 16,
             GlyphStyle::Small,
-            "Esc[=prev  Esc]=next  Esc/=search",
+            "F1=menu F3=save F4=back  Esc[/]=nav",
         );
 
         // Separator
@@ -528,7 +626,7 @@ impl Renderer {
             MARGIN_LEFT, self.screensize.y - 36,
             self.screensize.x - MARGIN_LEFT * 2, 28,
             GlyphStyle::Small,
-            "ENTER=search  q(empty)=back",
+            "F4=back  ENTER=search",
         );
 
         self.finish();
@@ -582,7 +680,7 @@ impl Renderer {
             ),
         ).ok();
 
-        let status = format!("TYPEWRITER  Words: {}  Esc+d=done", buffer.word_count());
+        let status = format!("TYPEWRITER  W:{}  F1=menu F4=done", buffer.word_count());
         self.post_text(
             MARGIN_LEFT, bar_top + 4,
             self.screensize.x - MARGIN_LEFT * 2, STATUS_BAR_HEIGHT - 4,
@@ -628,7 +726,7 @@ impl Renderer {
             MARGIN_LEFT, self.screensize.y - 50,
             self.screensize.x - MARGIN_LEFT * 2, 40,
             GlyphStyle::Small,
-            "s=save as doc  q=discard",
+            "s=save as doc  F4=discard",
         );
 
         self.finish();

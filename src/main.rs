@@ -19,6 +19,12 @@ use crate::export::ExportSystem;
 const SERVER_NAME: &str = "_Writer_";
 const APP_NAME: &str = "Writer";
 
+// F-key character codes from Xous keyboard service
+const KEY_F1: char = '\u{0011}';
+const KEY_F2: char = '\u{0012}';
+const KEY_F3: char = '\u{0013}';
+const KEY_F4: char = '\u{0014}';
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum AppMode {
     ModeSelect,
@@ -32,6 +38,8 @@ pub enum AppMode {
     JournalSearch,
     TypewriterEdit,
     TypewriterDone,
+    HelpScreen,
+    ConfirmExit,
 }
 
 #[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
@@ -60,6 +68,11 @@ pub struct WriterApp {
     file_menu_cursor: usize,
     // Export menu state
     export_menu_cursor: usize,
+    // F-key menu overlay state
+    menu_visible: bool,
+    menu_cursor: usize,
+    // Mode before help/confirm (to return to)
+    prev_mode: AppMode,
 }
 
 impl WriterApp {
@@ -103,6 +116,9 @@ impl WriterApp {
             doc_cursor: 0,
             file_menu_cursor: 0,
             export_menu_cursor: 0,
+            menu_visible: false,
+            menu_cursor: 0,
+            prev_mode: AppMode::ModeSelect,
         }
     }
 
@@ -110,7 +126,19 @@ impl WriterApp {
         if !self.allow_redraw {
             return;
         }
+
+        if self.menu_visible {
+            self.renderer.draw_menu(self.menu_items(), self.menu_cursor);
+            return;
+        }
+
         match self.mode {
+            AppMode::HelpScreen => {
+                self.renderer.draw_help(self.help_text());
+            }
+            AppMode::ConfirmExit => {
+                self.renderer.draw_confirm_exit();
+            }
             AppMode::ModeSelect => self.renderer.draw_mode_select(self.mode_cursor),
             AppMode::DocList => self.renderer.draw_doc_list(&self.doc_list, self.doc_cursor),
             AppMode::EditorEdit => {
@@ -146,6 +174,66 @@ impl WriterApp {
     }
 
     pub fn handle_key(&mut self, key: char) {
+        // F-keys always processed first (clear any pending ESC)
+        match key {
+            KEY_F1 => { self.esc_pending = false; self.toggle_menu(); return; }
+            KEY_F4 => { self.esc_pending = false; self.handle_f4(); return; }
+            KEY_F2 => { self.esc_pending = false; self.handle_f2(); return; }
+            KEY_F3 => { self.esc_pending = false; self.handle_f3(); return; }
+            _ => {}
+        }
+
+        // If menu is open, handle menu navigation only
+        if self.menu_visible {
+            match key {
+                '\u{F700}' | '↑' => {
+                    if self.menu_cursor > 0 {
+                        self.menu_cursor -= 1;
+                        self.redraw();
+                    }
+                }
+                '\u{F701}' | '↓' => {
+                    let items = self.menu_items();
+                    if self.menu_cursor + 1 < items.len() {
+                        self.menu_cursor += 1;
+                        self.redraw();
+                    }
+                }
+                '\r' | '\n' => {
+                    self.menu_select_item();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Help screen - any key returns to previous mode
+        if self.mode == AppMode::HelpScreen {
+            self.mode = self.prev_mode;
+            self.redraw();
+            return;
+        }
+
+        // Confirm exit dialog
+        if self.mode == AppMode::ConfirmExit {
+            match key {
+                'y' => {
+                    self.save_current_doc();
+                    self.refresh_doc_list();
+                    self.mode = AppMode::DocList;
+                    self.redraw();
+                }
+                'n' => {
+                    self.editor.buffer.modified = false;
+                    self.refresh_doc_list();
+                    self.mode = AppMode::DocList;
+                    self.redraw();
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // Handle escape sequences
         if self.esc_pending {
             self.esc_pending = false;
@@ -171,6 +259,357 @@ impl WriterApp {
             AppMode::TypewriterEdit => self.handle_key_typewriter(key),
             AppMode::TypewriterDone => self.handle_key_typewriter_done(key),
             _ => {}
+        }
+    }
+
+    fn menu_items(&self) -> &'static [&'static str] {
+        match self.mode {
+            AppMode::EditorEdit | AppMode::EditorPreview => {
+                &["Help", "Save", "Export", "File Menu", "Toggle Preview"]
+            }
+            AppMode::JournalDay => {
+                &["Help", "Prev Day", "Next Day", "Today", "Search"]
+            }
+            AppMode::TypewriterEdit => {
+                &["Help", "Done (summary)"]
+            }
+            AppMode::DocList => &["Help", "New Document", "Back"],
+            AppMode::ModeSelect => &["Help"],
+            AppMode::TypewriterDone => &["Help", "Save as Doc", "Discard"],
+            AppMode::FileMenu => &["Help", "Back to Editor"],
+            AppMode::ExportMenu => &["Help", "Back to Editor"],
+            AppMode::JournalSearch => &["Help", "Back to Journal"],
+            _ => &["Help"],
+        }
+    }
+
+    fn toggle_menu(&mut self) {
+        if self.mode == AppMode::HelpScreen || self.mode == AppMode::ConfirmExit {
+            return;
+        }
+        self.menu_visible = !self.menu_visible;
+        self.menu_cursor = 0;
+        self.redraw();
+    }
+
+    fn menu_select_item(&mut self) {
+        self.menu_visible = false;
+
+        match self.mode {
+            AppMode::EditorEdit | AppMode::EditorPreview => {
+                match self.menu_cursor {
+                    0 => {
+                        self.prev_mode = self.mode;
+                        self.mode = AppMode::HelpScreen;
+                    }
+                    1 => { self.save_current_doc(); }
+                    2 => {
+                        self.export_menu_cursor = 0;
+                        self.mode = AppMode::ExportMenu;
+                    }
+                    3 => {
+                        self.file_menu_cursor = 0;
+                        self.mode = AppMode::FileMenu;
+                    }
+                    4 => {
+                        self.mode = if self.mode == AppMode::EditorEdit {
+                            AppMode::EditorPreview
+                        } else {
+                            AppMode::EditorEdit
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            AppMode::JournalDay => {
+                match self.menu_cursor {
+                    0 => {
+                        self.prev_mode = self.mode;
+                        self.mode = AppMode::HelpScreen;
+                    }
+                    1 => {
+                        self.journal.save_entry(&self.storage);
+                        self.journal.prev_day(&self.storage);
+                    }
+                    2 => {
+                        self.journal.save_entry(&self.storage);
+                        self.journal.next_day(&self.storage);
+                    }
+                    3 => {
+                        self.journal.save_entry(&self.storage);
+                        self.journal.jump_to_today();
+                        self.journal.load_entry(&self.storage);
+                    }
+                    4 => {
+                        self.journal.search_query.clear();
+                        self.journal.search_results.clear();
+                        self.mode = AppMode::JournalSearch;
+                    }
+                    _ => {}
+                }
+            }
+            AppMode::TypewriterEdit => {
+                match self.menu_cursor {
+                    0 => {
+                        self.prev_mode = self.mode;
+                        self.mode = AppMode::HelpScreen;
+                    }
+                    1 => { self.mode = AppMode::TypewriterDone; }
+                    _ => {}
+                }
+            }
+            AppMode::DocList => {
+                match self.menu_cursor {
+                    0 => {
+                        self.prev_mode = self.mode;
+                        self.mode = AppMode::HelpScreen;
+                    }
+                    1 => { self.new_doc(); return; }
+                    2 => { self.mode = AppMode::ModeSelect; }
+                    _ => {}
+                }
+            }
+            AppMode::TypewriterDone => {
+                match self.menu_cursor {
+                    0 => {
+                        self.prev_mode = self.mode;
+                        self.mode = AppMode::HelpScreen;
+                    }
+                    1 => {
+                        let content = self.typewriter.buffer.to_string();
+                        let name = self.storage.next_doc_name("Freewrite");
+                        self.storage.save_doc(&name, &content);
+                        self.mode = AppMode::ModeSelect;
+                    }
+                    2 => { self.mode = AppMode::ModeSelect; }
+                    _ => {}
+                }
+            }
+            AppMode::FileMenu => {
+                match self.menu_cursor {
+                    0 => {
+                        self.prev_mode = self.mode;
+                        self.mode = AppMode::HelpScreen;
+                    }
+                    1 => { self.mode = AppMode::EditorEdit; }
+                    _ => {}
+                }
+            }
+            AppMode::ExportMenu => {
+                match self.menu_cursor {
+                    0 => {
+                        self.prev_mode = self.mode;
+                        self.mode = AppMode::HelpScreen;
+                    }
+                    1 => { self.mode = AppMode::EditorEdit; }
+                    _ => {}
+                }
+            }
+            AppMode::JournalSearch => {
+                match self.menu_cursor {
+                    0 => {
+                        self.prev_mode = self.mode;
+                        self.mode = AppMode::HelpScreen;
+                    }
+                    1 => { self.mode = AppMode::JournalDay; }
+                    _ => {}
+                }
+            }
+            _ => {
+                // Help is always item 0
+                if self.menu_cursor == 0 {
+                    self.prev_mode = self.mode;
+                    self.mode = AppMode::HelpScreen;
+                }
+            }
+        }
+        self.redraw();
+    }
+
+    fn handle_f2(&mut self) {
+        if self.menu_visible { self.menu_visible = false; }
+        if self.mode == AppMode::HelpScreen || self.mode == AppMode::ConfirmExit { return; }
+        // F2 = Toggle Preview (in editor modes)
+        match self.mode {
+            AppMode::EditorEdit => { self.mode = AppMode::EditorPreview; }
+            AppMode::EditorPreview => { self.mode = AppMode::EditorEdit; }
+            _ => {}
+        }
+        self.redraw();
+    }
+
+    fn handle_f3(&mut self) {
+        if self.menu_visible { self.menu_visible = false; }
+        if self.mode == AppMode::HelpScreen || self.mode == AppMode::ConfirmExit { return; }
+        // F3 = Save
+        match self.mode {
+            AppMode::EditorEdit | AppMode::EditorPreview => {
+                self.save_current_doc();
+            }
+            AppMode::JournalDay => {
+                self.journal.save_entry(&self.storage);
+            }
+            _ => {}
+        }
+        self.redraw();
+    }
+
+    fn handle_f4(&mut self) {
+        // F4 closes menu first
+        if self.menu_visible {
+            self.menu_visible = false;
+            self.redraw();
+            return;
+        }
+        // F4 closes help screen
+        if self.mode == AppMode::HelpScreen {
+            self.mode = self.prev_mode;
+            self.redraw();
+            return;
+        }
+        // F4 cancels confirm exit
+        if self.mode == AppMode::ConfirmExit {
+            self.mode = self.prev_mode;
+            self.redraw();
+            return;
+        }
+        // F4 = Back/Exit with unsaved changes confirmation
+        match self.mode {
+            AppMode::EditorEdit | AppMode::EditorPreview => {
+                if self.editor.buffer.modified {
+                    self.prev_mode = self.mode;
+                    self.mode = AppMode::ConfirmExit;
+                    self.redraw();
+                } else {
+                    self.refresh_doc_list();
+                    self.mode = AppMode::DocList;
+                    self.redraw();
+                }
+            }
+            AppMode::DocList => {
+                self.mode = AppMode::ModeSelect;
+                self.redraw();
+            }
+            AppMode::FileMenu | AppMode::ExportMenu => {
+                self.mode = AppMode::EditorEdit;
+                self.redraw();
+            }
+            AppMode::JournalDay => {
+                self.journal.save_entry(&self.storage);
+                self.mode = AppMode::ModeSelect;
+                self.redraw();
+            }
+            AppMode::JournalSearch => {
+                self.mode = AppMode::JournalDay;
+                self.redraw();
+            }
+            AppMode::TypewriterEdit => {
+                self.mode = AppMode::TypewriterDone;
+                self.redraw();
+            }
+            AppMode::TypewriterDone => {
+                self.mode = AppMode::ModeSelect;
+                self.redraw();
+            }
+            AppMode::ModeSelect => {
+                // Top level - quit
+            }
+            _ => {}
+        }
+    }
+
+    fn help_text(&self) -> &'static str {
+        match self.prev_mode {
+            AppMode::EditorEdit | AppMode::EditorPreview => {
+                "EDITOR HELP\n\n\
+                 F1     Menu\n\
+                 F2     Toggle Preview\n\
+                 F3     Save\n\
+                 F4     Back to doc list\n\n\
+                 Arrows Move cursor\n\
+                 Esc+p  Toggle Preview\n\
+                 Esc+s  Save\n\
+                 Esc+e  Export menu\n\
+                 Esc+f  File menu\n\
+                 Esc+q  Back to doc list"
+            }
+            AppMode::DocList => {
+                "DOCUMENTS HELP\n\n\
+                 F1     Menu\n\
+                 F4     Back\n\n\
+                 Enter  Open document\n\
+                 n      New document\n\
+                 d      Delete document\n\
+                 q      Back"
+            }
+            AppMode::JournalDay => {
+                "JOURNAL HELP\n\n\
+                 F1     Menu\n\
+                 F3     Save\n\
+                 F4     Back\n\n\
+                 Esc+[  Previous day\n\
+                 Esc+]  Next day\n\
+                 Esc+t  Today\n\
+                 Esc+/  Search\n\
+                 Esc+s  Save\n\
+                 Esc+q  Back"
+            }
+            AppMode::TypewriterEdit => {
+                "TYPEWRITER HELP\n\n\
+                 F1     Menu\n\
+                 F4     Done (summary)\n\n\
+                 Type freely!\n\
+                 No backspace.\n\
+                 No cursor movement.\n\n\
+                 Esc+d  Done (summary)"
+            }
+            AppMode::ModeSelect => {
+                "WRITER HELP\n\n\
+                 F1     Menu\n\
+                 F4     Quit\n\n\
+                 Up/Dn  Move cursor\n\
+                 Enter  Open mode\n\
+                 q      Quit"
+            }
+            AppMode::TypewriterDone => {
+                "SESSION DONE HELP\n\n\
+                 F1     Menu\n\
+                 F4     Discard & back\n\n\
+                 s      Save as document\n\
+                 q      Discard & back"
+            }
+            AppMode::JournalSearch => {
+                "JOURNAL SEARCH HELP\n\n\
+                 F1     Menu\n\
+                 F4     Back to journal\n\n\
+                 Type   Enter query\n\
+                 Enter  Search\n\
+                 Bksp   Delete char\n\
+                 q      Back (empty query)"
+            }
+            AppMode::FileMenu => {
+                "FILE MENU HELP\n\n\
+                 F1     Menu\n\
+                 F4     Back to editor\n\n\
+                 Up/Dn  Move cursor\n\
+                 Enter  Select action\n\
+                 q      Back to editor"
+            }
+            AppMode::ExportMenu => {
+                "EXPORT MENU HELP\n\n\
+                 F1     Menu\n\
+                 F4     Back to editor\n\n\
+                 Up/Dn  Move cursor\n\
+                 Enter  Export\n\
+                 q      Back to editor"
+            }
+            _ => {
+                "HELP\n\n\
+                 F1     Menu\n\
+                 F4     Back\n\n\
+                 Press any key\n\
+                 to close."
+            }
         }
     }
 

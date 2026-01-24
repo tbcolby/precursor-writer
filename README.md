@@ -6,6 +6,15 @@ A unified writing suite for the [Precursor](https://www.crowdsupply.com/sutajio-
 
 ## Features
 
+### Universal Keys
+
+| Key | Action |
+|-----|--------|
+| F1 | Menu / Help |
+| F4 | Exit / Back |
+| F2 | Toggle Preview (in editor) |
+| F3 | Save (in editor/journal) |
+
 ### Markdown Editor
 
 A multi-document text editor with line-level markdown styling and preview mode.
