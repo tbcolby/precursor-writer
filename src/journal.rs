@@ -7,6 +7,7 @@ pub struct JournalState {
     pub current_date: String,
     pub search_query: String,
     pub search_results: Vec<(String, String)>, // (date, matching line)
+    pub search_cursor: usize, // Currently selected search result
 }
 
 impl JournalState {
@@ -16,6 +17,7 @@ impl JournalState {
             current_date: String::new(),
             search_query: String::new(),
             search_results: Vec::new(),
+            search_cursor: 0,
         }
     }
 
@@ -55,6 +57,7 @@ impl JournalState {
 
     pub fn search_entries(&mut self, storage: &WriterStorage) {
         self.search_results.clear();
+        self.search_cursor = 0;
         if self.search_query.is_empty() {
             return;
         }
@@ -72,6 +75,34 @@ impl JournalState {
                     }
                 }
             }
+        }
+    }
+
+    /// Move search cursor up
+    pub fn search_cursor_up(&mut self) {
+        if self.search_cursor > 0 {
+            self.search_cursor -= 1;
+        }
+    }
+
+    /// Move search cursor down
+    pub fn search_cursor_down(&mut self) {
+        if !self.search_results.is_empty() && self.search_cursor < self.search_results.len() - 1 {
+            self.search_cursor += 1;
+        }
+    }
+
+    /// Jump to the currently selected search result
+    pub fn jump_to_search_result(&mut self, storage: &WriterStorage) -> bool {
+        if let Some((date, _)) = self.search_results.get(self.search_cursor) {
+            self.save_entry(storage);
+            self.current_date = date.clone();
+            self.load_entry(storage);
+            self.search_results.clear();
+            self.search_query.clear();
+            true
+        } else {
+            false
         }
     }
 }

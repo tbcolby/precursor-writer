@@ -2,6 +2,7 @@ use std::fmt::Write;
 use gam::{Gam, GlyphStyle, Gid};
 use gam::menu::*;
 use writer_core::{TextBuffer, LineKind};
+use writer_core::serialize::{date_to_epoch_ms, epoch_ms_to_weekday};
 use crate::ui::{format_number, truncate_str};
 
 const MARGIN_LEFT: isize = 8;
@@ -248,7 +249,7 @@ impl Renderer {
 
     // ---- Editor ----
 
-    pub fn draw_editor(&self, buffer: &TextBuffer, doc_name: &str, preview: bool) {
+    pub fn draw_editor(&self, buffer: &TextBuffer, doc_name: &str, preview: bool, show_line_numbers: bool) {
         self.clear();
 
         let content_top = 4isize;
@@ -315,12 +316,26 @@ impl Renderer {
                 continue;
             }
 
-            // Text offset for block quotes
+            // Line number column width (4 digits + space = ~40px)
+            let line_num_width: isize = if show_line_numbers { 40 } else { 0 };
+
+            // Text offset for block quotes and line numbers
             let text_left = if kind == LineKind::BlockQuote {
-                MARGIN_LEFT + 8
+                MARGIN_LEFT + line_num_width + 8
             } else {
-                MARGIN_LEFT
+                MARGIN_LEFT + line_num_width
             };
+
+            // Draw line numbers if enabled
+            if show_line_numbers {
+                let line_num_str = format!("{:>3} ", line_idx + 1);
+                self.post_text(
+                    MARGIN_LEFT, y,
+                    line_num_width, line_h,
+                    GlyphStyle::Monospace,
+                    &line_num_str,
+                );
+            }
 
             // Render the text line
             if !display_text.is_empty() {
@@ -332,7 +347,7 @@ impl Renderer {
                 );
             }
 
-            // Draw cursor (only in edit mode)
+            // Draw cursor (only in edit mode, after text_left is calculated with line numbers)
             if !preview && line_idx == buffer.cursor.line {
                 self.draw_cursor(text_left, y, &display_text, buffer.cursor.col, line_h, style);
             }
@@ -420,7 +435,7 @@ impl Renderer {
             "FILE",
         );
 
-        let items = ["New Document", "Delete Current", "Back to Editor"];
+        let items = ["New Document", "Rename", "Delete Current", "Back to Editor"];
         let list_top = 50;
         let line_height = 32;
 
@@ -441,6 +456,44 @@ impl Renderer {
             self.screensize.x - MARGIN_LEFT * 2, 30,
             GlyphStyle::Small,
             "F4=back  ENTER=select",
+        );
+
+        self.finish();
+    }
+
+    pub fn draw_rename_dialog(&self, new_name: &str, old_name: &str) {
+        self.clear();
+
+        self.post_text(
+            MARGIN_LEFT, 8,
+            self.screensize.x - MARGIN_LEFT * 2, 30,
+            GlyphStyle::Bold,
+            "RENAME DOCUMENT",
+        );
+
+        // Show current name
+        let current_label = format!("Current: {}", old_name);
+        self.post_text(
+            MARGIN_LEFT, 60,
+            self.screensize.x - MARGIN_LEFT * 2, 20,
+            GlyphStyle::Small,
+            &current_label,
+        );
+
+        // Input field with cursor
+        let input_display = format!("New: {}|", new_name);
+        self.post_text(
+            MARGIN_LEFT, 100,
+            self.screensize.x - MARGIN_LEFT * 2, 24,
+            GlyphStyle::Regular,
+            &input_display,
+        );
+
+        self.post_text(
+            MARGIN_LEFT, self.screensize.y - 40,
+            self.screensize.x - MARGIN_LEFT * 2, 30,
+            GlyphStyle::Small,
+            "F4=cancel  ENTER=confirm",
         );
 
         self.finish();
@@ -489,8 +542,11 @@ impl Renderer {
     pub fn draw_journal(&self, buffer: &TextBuffer, date: &str) {
         self.clear();
 
-        // Header with date
-        let header = format!("JOURNAL  {}", date);
+        // Header with date and weekday
+        let weekday = date_to_epoch_ms(date)
+            .map(epoch_ms_to_weekday)
+            .unwrap_or("???");
+        let header = format!("JOURNAL  {} {}", date, weekday);
         self.post_text(
             MARGIN_LEFT, 4,
             self.screensize.x - MARGIN_LEFT * 2, 24,
@@ -576,7 +632,7 @@ impl Renderer {
 
     // ---- Journal Search ----
 
-    pub fn draw_journal_search(&self, query: &str, results: &[(String, String)]) {
+    pub fn draw_journal_search(&self, query: &str, results: &[(String, String)], cursor: usize) {
         self.clear();
 
         self.post_text(
@@ -604,7 +660,14 @@ impl Renderer {
                 20, results_top as isize,
                 self.screensize.x - 40, 20,
                 GlyphStyle::Small,
-                "No matches found",
+                "No matches found. Press ENTER to search.",
+            );
+        } else if results.is_empty() {
+            self.post_text(
+                20, results_top as isize,
+                self.screensize.x - 40, 20,
+                GlyphStyle::Small,
+                "Type query, then ENTER to search",
             );
         } else {
             for (i, (date, line)) in results.iter().enumerate() {
@@ -612,21 +675,63 @@ impl Renderer {
                 if y + line_height > self.screensize.y - 40 {
                     break;
                 }
+
+                // Highlight selected result
+                if i == cursor {
+                    // Draw selection background
+                    self.gam.draw_rectangle(
+                        self.content,
+                        Rectangle::new_with_style(
+                            Point::new(8, y - 2),
+                            Point::new(self.screensize.x - 8, y + line_height - 4),
+                            DrawStyle {
+                                fill_color: Some(PixelColor::Dark),
+                                stroke_color: None,
+                                stroke_width: 0,
+                            },
+                        ),
+                    ).ok();
+                }
+
                 let truncated = format!("{}: {}", date, truncate_str(line, 28));
-                self.post_text(
-                    12, y,
-                    self.screensize.x - 24, line_height - 2,
-                    GlyphStyle::Small,
-                    &truncated,
-                );
+
+                // Create inverted text for selected item
+                if i == cursor {
+                    let mut tv = TextView::new(
+                        self.content,
+                        TextBounds::BoundingBox(Rectangle::new_coords(
+                            12, y,
+                            self.screensize.x - 12, y + line_height - 2,
+                        ))
+                    );
+                    tv.style = GlyphStyle::Small;
+                    tv.clear_area = false;
+                    tv.invert = true;
+                    use std::fmt::Write;
+                    write!(tv.text, "{}", truncated).ok();
+                    self.gam.post_textview(&mut tv).ok();
+                } else {
+                    self.post_text(
+                        12, y,
+                        self.screensize.x - 24, line_height - 2,
+                        GlyphStyle::Small,
+                        &truncated,
+                    );
+                }
             }
         }
 
+        // Help text
+        let help_text = if results.is_empty() {
+            "F4=back  ENTER=search"
+        } else {
+            "↑↓=select  ENTER=go  F4=back"
+        };
         self.post_text(
             MARGIN_LEFT, self.screensize.y - 36,
             self.screensize.x - MARGIN_LEFT * 2, 28,
             GlyphStyle::Small,
-            "F4=back  ENTER=search",
+            help_text,
         );
 
         self.finish();

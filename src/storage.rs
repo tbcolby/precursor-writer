@@ -2,11 +2,15 @@ use std::io::{Read, Write, Seek, SeekFrom};
 use writer_core::serialize::{
     serialize_document, deserialize_document,
     serialize_index, deserialize_index,
+    serialize_config, deserialize_config,
+    WriterConfig,
 };
 
 const DICT_DOCS: &str = "writer.docs";
 const DICT_JOURNAL: &str = "writer.journal";
+const DICT_SETTINGS: &str = "writer.settings";
 const INDEX_KEY: &str = "_index";
+const CONFIG_KEY: &str = "config";
 
 pub struct WriterStorage {
     pddb: pddb::Pddb,
@@ -187,5 +191,43 @@ impl WriterStorage {
             }
             Err(e) => log::error!("Failed to write journal index: {:?}", e),
         }
+    }
+
+    // ---- Settings Operations ----
+
+    /// Load app configuration. Returns default config if not found.
+    pub fn load_config(&self) -> WriterConfig {
+        match self.pddb.get(DICT_SETTINGS, CONFIG_KEY, None, false, false, None, None::<fn()>) {
+            Ok(mut key) => {
+                let mut data = Vec::new();
+                key.seek(SeekFrom::Start(0)).ok();
+                if key.read_to_end(&mut data).is_ok() && data.len() >= 3 {
+                    deserialize_config(&data).unwrap_or_else(WriterConfig::default)
+                } else {
+                    WriterConfig::default()
+                }
+            }
+            Err(_) => WriterConfig::default(),
+        }
+    }
+
+    /// Save app configuration.
+    pub fn save_config(&self, config: &WriterConfig) {
+        let data = serialize_config(config);
+        match self.pddb.get(DICT_SETTINGS, CONFIG_KEY, None, true, true, Some(data.len()), None::<fn()>) {
+            Ok(mut key) => {
+                key.seek(SeekFrom::Start(0)).ok();
+                if let Err(e) = key.write_all(&data) {
+                    log::error!("Failed to write config: {:?}", e);
+                    return;
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to open config key: {:?}", e);
+                return;
+            }
+        }
+        self.pddb.sync().ok();
+        log::info!("Settings saved");
     }
 }

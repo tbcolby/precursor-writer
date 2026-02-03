@@ -16,6 +16,7 @@ gam = { path = "../../services/gam" }
 pddb = { path = "../../services/pddb" }
 modals = { path = "../../services/modals" }
 llio = { path = "../../services/llio" }
+usb-device-xous = { path = "../../services/usb-device-xous" }
 num-derive = { version = "0.4.2", default-features = false }
 num-traits = { version = "0.2.14", default-features = false }
 writer-core = { path = "writer-core" }

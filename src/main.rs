@@ -15,6 +15,7 @@ use crate::typewriter::TypewriterState;
 use crate::storage::WriterStorage;
 use crate::render::Renderer;
 use crate::export::ExportSystem;
+use writer_core::serialize::WriterConfig;
 
 const SERVER_NAME: &str = "_Writer_";
 const APP_NAME: &str = "Writer";
@@ -33,6 +34,7 @@ pub enum AppMode {
     EditorPreview,
     FileMenu,
     ExportMenu,
+    RenameDoc,
     JournalDay,
     JournalNav,
     JournalSearch,
@@ -57,6 +59,7 @@ pub struct WriterApp {
     renderer: Renderer,
     storage: WriterStorage,
     export: ExportSystem,
+    config: WriterConfig,
     editor: EditorState,
     journal: JournalState,
     typewriter: TypewriterState,
@@ -68,6 +71,8 @@ pub struct WriterApp {
     file_menu_cursor: usize,
     // Export menu state
     export_menu_cursor: usize,
+    // Rename input state
+    rename_input: String,
     // F-key menu overlay state
     menu_visible: bool,
     menu_cursor: usize,
@@ -101,13 +106,22 @@ impl WriterApp {
         let storage = WriterStorage::new();
         let export = ExportSystem::new();
 
+        // Load saved config (or defaults)
+        let config = storage.load_config();
+        log::info!("Loaded config: default_mode={}, autosave={}, line_numbers={}",
+            config.default_mode, config.autosave, config.show_line_numbers);
+
+        // Set initial mode based on config.default_mode
+        let initial_mode_cursor = config.default_mode as usize;
+
         Self {
             mode: AppMode::ModeSelect,
-            mode_cursor: 0,
+            mode_cursor: initial_mode_cursor.min(2), // Clamp to valid range (0-2)
             allow_redraw: true,
             renderer,
             storage,
             export,
+            config,
             editor: EditorState::new(),
             journal: JournalState::new(),
             typewriter: TypewriterState::new(),
@@ -116,6 +130,7 @@ impl WriterApp {
             doc_cursor: 0,
             file_menu_cursor: 0,
             export_menu_cursor: 0,
+            rename_input: String::new(),
             menu_visible: false,
             menu_cursor: 0,
             prev_mode: AppMode::ModeSelect,
@@ -142,13 +157,16 @@ impl WriterApp {
             AppMode::ModeSelect => self.renderer.draw_mode_select(self.mode_cursor),
             AppMode::DocList => self.renderer.draw_doc_list(&self.doc_list, self.doc_cursor),
             AppMode::EditorEdit => {
-                self.renderer.draw_editor(&self.editor.buffer, &self.editor.doc_name, false);
+                self.renderer.draw_editor(&self.editor.buffer, &self.editor.doc_name, false, self.config.show_line_numbers);
             }
             AppMode::EditorPreview => {
-                self.renderer.draw_editor(&self.editor.buffer, &self.editor.doc_name, true);
+                self.renderer.draw_editor(&self.editor.buffer, &self.editor.doc_name, true, self.config.show_line_numbers);
             }
             AppMode::FileMenu => {
                 self.renderer.draw_file_menu(self.file_menu_cursor);
+            }
+            AppMode::RenameDoc => {
+                self.renderer.draw_rename_dialog(&self.rename_input, &self.editor.doc_name);
             }
             AppMode::ExportMenu => {
                 self.renderer.draw_export_menu(self.export_menu_cursor);
@@ -157,7 +175,7 @@ impl WriterApp {
                 self.renderer.draw_journal(&self.journal.buffer, &self.journal.current_date);
             }
             AppMode::JournalSearch => {
-                self.renderer.draw_journal_search(&self.journal.search_query, &self.journal.search_results);
+                self.renderer.draw_journal_search(&self.journal.search_query, &self.journal.search_results, self.journal.search_cursor);
             }
             AppMode::TypewriterEdit => {
                 self.renderer.draw_typewriter(&self.typewriter.buffer);
@@ -253,6 +271,7 @@ impl WriterApp {
             AppMode::EditorEdit => self.handle_key_editor(key),
             AppMode::EditorPreview => self.handle_key_preview(key),
             AppMode::FileMenu => self.handle_key_file_menu(key),
+            AppMode::RenameDoc => self.handle_key_rename(key),
             AppMode::ExportMenu => self.handle_key_export_menu(key),
             AppMode::JournalDay => self.handle_key_journal(key),
             AppMode::JournalSearch => self.handle_key_journal_search(key),
@@ -277,6 +296,7 @@ impl WriterApp {
             AppMode::ModeSelect => &["Help"],
             AppMode::TypewriterDone => &["Help", "Save as Doc", "Discard"],
             AppMode::FileMenu => &["Help", "Back to Editor"],
+            AppMode::RenameDoc => &["Help", "Cancel"],
             AppMode::ExportMenu => &["Help", "Back to Editor"],
             AppMode::JournalSearch => &["Help", "Back to Journal"],
             _ => &["Help"],
@@ -395,6 +415,16 @@ impl WriterApp {
                     _ => {}
                 }
             }
+            AppMode::RenameDoc => {
+                match self.menu_cursor {
+                    0 => {
+                        self.prev_mode = self.mode;
+                        self.mode = AppMode::HelpScreen;
+                    }
+                    1 => { self.mode = AppMode::EditorEdit; } // Cancel
+                    _ => {}
+                }
+            }
             AppMode::ExportMenu => {
                 match self.menu_cursor {
                     0 => {
@@ -490,7 +520,7 @@ impl WriterApp {
                 self.mode = AppMode::ModeSelect;
                 self.redraw();
             }
-            AppMode::FileMenu | AppMode::ExportMenu => {
+            AppMode::FileMenu | AppMode::RenameDoc | AppMode::ExportMenu => {
                 self.mode = AppMode::EditorEdit;
                 self.redraw();
             }
@@ -569,7 +599,13 @@ impl WriterApp {
                  F4     Quit\n\n\
                  Up/Dn  Move cursor\n\
                  Enter  Open mode\n\
-                 q      Quit"
+                 q      Quit\n\n\
+                 -- Settings (any mode) --\n\
+                 Esc+A  Toggle autosave\n\
+                 Esc+L  Toggle line numbers\n\
+                 Esc+0  Default: Editor\n\
+                 Esc+1  Default: Journal\n\
+                 Esc+2  Default: Typewriter"
             }
             AppMode::TypewriterDone => {
                 "SESSION DONE HELP\n\n\
@@ -583,7 +619,8 @@ impl WriterApp {
                  F1     Menu\n\
                  F4     Back to journal\n\n\
                  Type   Enter query\n\
-                 Enter  Search\n\
+                 Enter  Search / Go to result\n\
+                 Up/Dn  Navigate results\n\
                  Bksp   Delete char\n\
                  q      Back (empty query)"
             }
@@ -594,6 +631,14 @@ impl WriterApp {
                  Up/Dn  Move cursor\n\
                  Enter  Select action\n\
                  q      Back to editor"
+            }
+            AppMode::RenameDoc => {
+                "RENAME DOC HELP\n\n\
+                 F1     Menu\n\
+                 F4     Cancel\n\n\
+                 Type   New name\n\
+                 Enter  Confirm rename\n\
+                 Bksp   Delete char"
             }
             AppMode::ExportMenu => {
                 "EXPORT MENU HELP\n\n\
@@ -614,6 +659,48 @@ impl WriterApp {
     }
 
     fn handle_esc_command(&mut self, key: char) {
+        // Global settings commands (work in any mode)
+        match key {
+            'A' => {
+                // Toggle autosave (Shift+A)
+                self.config.autosave = !self.config.autosave;
+                log::info!("Autosave: {}", if self.config.autosave { "ON" } else { "OFF" });
+                self.storage.save_config(&self.config);
+                return;
+            }
+            'L' => {
+                // Toggle line numbers (Shift+L)
+                self.config.show_line_numbers = !self.config.show_line_numbers;
+                log::info!("Line numbers: {}", if self.config.show_line_numbers { "ON" } else { "OFF" });
+                self.storage.save_config(&self.config);
+                self.redraw();
+                return;
+            }
+            '0' => {
+                // Set default mode to Editor
+                self.config.default_mode = 0;
+                log::info!("Default mode: Editor");
+                self.storage.save_config(&self.config);
+                return;
+            }
+            '1' => {
+                // Set default mode to Journal
+                self.config.default_mode = 1;
+                log::info!("Default mode: Journal");
+                self.storage.save_config(&self.config);
+                return;
+            }
+            '2' => {
+                // Set default mode to Typewriter
+                self.config.default_mode = 2;
+                log::info!("Default mode: Typewriter");
+                self.storage.save_config(&self.config);
+                return;
+            }
+            _ => {}
+        }
+
+        // Mode-specific commands
         match self.mode {
             AppMode::EditorEdit => {
                 match key {
@@ -853,7 +940,7 @@ impl WriterApp {
                 }
             }
             '\u{F701}' | '↓' => {
-                if self.file_menu_cursor < 2 {
+                if self.file_menu_cursor < 3 {
                     self.file_menu_cursor += 1;
                     self.redraw();
                 }
@@ -866,6 +953,13 @@ impl WriterApp {
                         self.new_doc();
                     }
                     1 => {
+                        // Rename document
+                        self.rename_input.clear();
+                        self.rename_input.push_str(&self.editor.doc_name);
+                        self.mode = AppMode::RenameDoc;
+                        self.redraw();
+                    }
+                    2 => {
                         // Delete current
                         let name = self.editor.doc_name.clone();
                         if !name.is_empty() {
@@ -875,7 +969,7 @@ impl WriterApp {
                         self.mode = AppMode::DocList;
                         self.redraw();
                     }
-                    2 => {
+                    3 => {
                         // Back to editor
                         self.mode = AppMode::EditorEdit;
                         self.redraw();
@@ -885,6 +979,39 @@ impl WriterApp {
             }
             'q' => {
                 self.mode = AppMode::EditorEdit;
+                self.redraw();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_rename(&mut self, key: char) {
+        match key {
+            '\r' | '\n' => {
+                // Confirm rename
+                let new_name = self.rename_input.trim().to_string();
+                if !new_name.is_empty() && new_name != self.editor.doc_name {
+                    let old_name = self.editor.doc_name.clone();
+                    let content = self.editor.buffer.to_string();
+                    // Save with new name
+                    self.storage.save_doc(&new_name, &content);
+                    // Delete old name
+                    if !old_name.is_empty() {
+                        self.storage.delete_doc(&old_name);
+                    }
+                    self.editor.doc_name = new_name;
+                }
+                self.mode = AppMode::EditorEdit;
+                self.redraw();
+            }
+            '\u{0008}' | '\u{007f}' => {
+                // Backspace
+                self.rename_input.pop();
+                self.redraw();
+            }
+            ch if !ch.is_control() => {
+                // Type character
+                self.rename_input.push(ch);
                 self.redraw();
             }
             _ => {}
@@ -909,12 +1036,30 @@ impl WriterApp {
                 let content = self.editor.buffer.to_string();
                 match self.export_menu_cursor {
                     0 => {
-                        // TCP export
-                        self.export.export_tcp(&content);
+                        // TCP export - waits for connection on port 7879
+                        match self.export.export_tcp(&content) {
+                            Ok(bytes) => {
+                                log::info!("TCP export successful: {} bytes", bytes);
+                            }
+                            Err(e) => {
+                                log::error!("TCP export failed: {:?}", e);
+                            }
+                        }
                     }
                     1 => {
-                        // USB autotype
-                        self.export.export_usb_autotype(&content);
+                        // USB autotype - types document as USB HID keyboard
+                        if !self.export.is_usb_ready() {
+                            log::warn!("USB not connected - cannot autotype");
+                        } else {
+                            match self.export.export_usb_autotype(&content) {
+                                Ok(chars) => {
+                                    log::info!("USB autotype successful: {} chars", chars);
+                                }
+                                Err(e) => {
+                                    log::error!("USB autotype failed: {:?}", e);
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -965,27 +1110,49 @@ impl WriterApp {
 
     fn handle_key_journal_search(&mut self, key: char) {
         match key {
-            '\r' | '\n' => {
-                // Execute search
-                self.journal.search_entries(&self.storage);
+            '\u{F700}' | '↑' => {
+                // Navigate search results up
+                self.journal.search_cursor_up();
                 self.redraw();
+            }
+            '\u{F701}' | '↓' => {
+                // Navigate search results down
+                self.journal.search_cursor_down();
+                self.redraw();
+            }
+            '\r' | '\n' => {
+                if !self.journal.search_results.is_empty() {
+                    // Jump to selected search result
+                    if self.journal.jump_to_search_result(&self.storage) {
+                        self.mode = AppMode::JournalDay;
+                        self.redraw();
+                    }
+                } else {
+                    // Execute search
+                    self.journal.search_entries(&self.storage);
+                    self.redraw();
+                }
             }
             '\u{0008}' | '\u{007f}' => {
                 self.journal.search_query.pop();
+                // Clear results when query changes
+                self.journal.search_results.clear();
+                self.journal.search_cursor = 0;
                 self.redraw();
             }
-            'q' if self.journal.search_query.is_empty() => {
+            'q' if self.journal.search_query.is_empty() && self.journal.search_results.is_empty() => {
                 self.mode = AppMode::JournalDay;
                 self.redraw();
             }
             ch if !ch.is_control() => {
                 self.journal.search_query.push(ch);
+                // Clear results when query changes
+                self.journal.search_results.clear();
+                self.journal.search_cursor = 0;
                 self.redraw();
             }
             _ => {
-                // Esc handled by esc_pending, 'q' when empty exits
-                self.mode = AppMode::JournalDay;
-                self.redraw();
+                // Esc handled by esc_pending
             }
         }
     }
@@ -1095,10 +1262,12 @@ fn main() -> ! {
                 match new_state {
                     gam::FocusState::Background => {
                         app.allow_redraw = false;
-                        // Auto-save on background
-                        app.save_current_doc();
-                        if app.mode == AppMode::JournalDay {
-                            app.journal.save_entry(&app.storage);
+                        // Auto-save on background (if enabled in settings)
+                        if app.config.autosave {
+                            app.save_current_doc();
+                            if app.mode == AppMode::JournalDay {
+                                app.journal.save_entry(&app.storage);
+                            }
                         }
                     }
                     gam::FocusState::Foreground => {
